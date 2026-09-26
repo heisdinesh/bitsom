@@ -1,19 +1,57 @@
-# Gmail and Meet Action Logger
+# Enterprise Action Intelligence Extension
 
-Unpacked Chrome extension for turning Gmail messages and Google Meet captions into structured action data.
+## Enterprise Information Is Everywhere. Execution Is Not.
 
-## What It Does
+Every day, critical business information is scattered across emails, meetings, reports, and documents.
+
+That creates an execution gap:
+
+- Decisions get lost.
+- Actions are missed.
+- Risks surface late.
+- Follow-ups require manual coordination.
+
+**The cost:** leaders spend valuable time connecting the dots instead of acting on them.
+
+## Our Solution
+
+An agentic system that turns fragmented organizational information into structured execution data:
+
+- Clear action items
+- Decisions
+- Risks
+- Follow-up workflows
+- Tickets and task handoffs
+
+This Chrome extension is the first local-first prototype. It captures work context directly from Gmail and Google Meet, analyzes it with local AI, stores structured outputs, and can create Trackleaf tickets from extracted action items.
+
+## Why This Approach
+
+**Local-first AI:** keeps sensitive enterprise data local and enables low-cost AI processing.
+
+**Browser extension:** captures business context where employees already work, without manual uploads.
+
+**Structured outputs:** converts messy communication into JSON that downstream systems can use.
+
+**Enterprise API integrations:** turns extracted actions into execution workflows such as tickets, tasks, and follow-ups.
+
+## Technical Principle
+
+**Local AI + structured outputs + existing enterprise APIs = a fast, privacy-conscious execution layer.**
+
+## Current Prototype Functionality
 
 - Watches Gmail inbox pages for unread mail.
-- Opens new mail, extracts sender, received time, subject, snippet, and body.
+- Extracts sender, received time, subject, snippet, and body.
 - Stores captured mail locally as JSON.
-- Sends email content to local Ollama to extract summaries, action items, tasks, calendar candidates, and Jira-style issues.
+- Uses local Ollama to extract summaries, action items, calendar candidates, and Jira-style issues.
 - Creates Trackleaf tickets from extracted action items.
 - Uses Trackleaf `BUG` type when an email looks like a user bug report.
-- Watches Google Meet pages for visible captions when captions/transcript are enabled.
+- Captures Google Meet captions when captions/transcript are enabled.
 - Saves Meet captions locally every 10 seconds.
-- Detects the same-page Meet end screen, saves the meeting transcript, and runs Ollama analysis.
-- Creates Trackleaf tickets from Google Meet action items.
+- Detects when a Meet call ends on the same page.
+- Summarizes Meet sessions and extracts action items using local Ollama.
+- Creates Trackleaf tickets from Meet action items.
 - Exports captured Gmail and Meet data as JSON files.
 
 ## Quick Start
@@ -39,53 +77,9 @@ OLLAMA_ORIGINS="chrome-extension://*" ollama serve
 ollama pull llama3.2
 ```
 
-## Gmail Usage
-
-Open Gmail, then run commands in the Gmail DevTools console:
-
-```js
-gmailMailLogger.scan()
-gmailMailLogger.exportJson()
-```
-
-Useful commands:
-
-```js
-gmailMailLogger.scanVisible()
-gmailMailLogger.messages()
-gmailMailLogger.analyzeStored()
-gmailMailLogger.createTrackleafForStored()
-gmailMailLogger.reset()
-```
-
-## Google Meet Usage
-
-Open Google Meet with captions enabled, then run commands in the Meet DevTools console:
-
-```js
-gmeetCaptionLogger.status()
-gmeetCaptionLogger.save()
-gmeetCaptionLogger.exportJson()
-```
-
-Useful commands:
-
-```js
-gmeetCaptionLogger.analyzeStored()
-gmeetCaptionLogger.createTrackleafForStored()
-gmeetCaptionLogger.sessions()
-gmeetCaptionLogger.reset()
-```
-
-## Storage
-
-- Gmail captures are stored in Gmail page `localStorage`.
-- Meet sessions are stored in Meet page `localStorage`.
-- Export commands download JSON files to the browser downloads folder.
-
 ## Developer Docs
 
-Detailed setup, JSON shapes, console commands, integration notes, and troubleshooting are in:
+Detailed setup, console commands, JSON shapes, integration notes, and troubleshooting are in:
 
 ```text
 docs/DEVELOPER.md
