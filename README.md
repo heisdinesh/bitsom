@@ -2,6 +2,8 @@
 
 Unpacked Chrome extension that watches Gmail inbox pages, captures unread/new message details, stores them as JSON in browser storage, sends each captured email to local Ollama for action-item extraction, and exports everything to a `.json` file.
 
+It also watches Google Meet pages and stores visible captions/transcript text locally when captions are enabled.
+
 ## Install
 
 1. Open `chrome://extensions`.
@@ -144,3 +146,25 @@ Ticket API responses are stored back into each email under `trackleaf.tickets`.
 - To read the body, it opens unread messages in the current Gmail tab, scrapes the visible message, stores JSON, asks Ollama for action items, creates Trackleaf tickets when enabled, then navigates back to the inbox.
 - Gmail does not provide a stable public DOM contract, so selectors may need updates if Gmail changes its markup.
 - Processed message ids and captured messages are cached in `localStorage`.
+
+## Google Meet Captions
+
+The extension also runs on `https://meet.google.com/*`. It does not turn captions on automatically; captions or transcript must already be enabled and visible in the Meet UI.
+
+Run these in the Google Meet DevTools console:
+
+```js
+gmeetCaptionLogger.status()
+gmeetCaptionLogger.save()
+gmeetCaptionLogger.sessions()
+gmeetCaptionLogger.exportJson()
+gmeetCaptionLogger.reset()
+```
+
+- `status()`: prints the current in-memory session and saved-session count.
+- `save()`: saves the current meeting captions to local storage.
+- `sessions()`: prints saved Meet caption sessions.
+- `exportJson()`: saves the current session and downloads all saved sessions as JSON.
+- `reset()`: clears saved Meet caption sessions.
+
+The extension also auto-saves when the tab unloads and every 30 seconds when captions exist.

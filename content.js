@@ -79,6 +79,10 @@
       .trim();
   }
 
+  function normalizeText(text) {
+    return cleanText(text).toLowerCase();
+  }
+
   function loadProcessedIds() {
     try {
       const raw = localStorage.getItem(PROCESSED_KEY);
@@ -284,6 +288,7 @@ Use this exact JSON shape:
 Rules:
 - If there are no real action items, return empty arrays.
 - Treat requests, reminders, appointments, deadlines, meetings, bookings, renewals, payments, filings, failed deployments, and verification warnings as potential action items.
+- Treat user reports of broken behavior, errors, crashes, failures, regressions, incorrect output, or "not working" as bugs. Add a jiraIssues entry with issueType "Bug".
 - If the email says to do something, create at least one actionItems entry and one tasks entry.
 - If the email describes a meeting, appointment, visit, event, or deadline with enough date/time information, create a calendarEvents entry.
 - Prefer explicit deadlines from the email. Do not invent dates or owners.
@@ -417,9 +422,11 @@ ${JSON.stringify(
   function getTrackleafCandidates(message) {
     const llm = message.llm || {};
     const actionItems = Array.isArray(llm.actionItems) ? llm.actionItems : [];
+    const bugIssues = (Array.isArray(llm.jiraIssues) ? llm.jiraIssues : []).filter((issue) =>
+      String(issue.issueType || "").toLowerCase().includes("bug")
+    );
 
-    return actionItems
-      .map((item, index) => ({
+    const candidates = actionItems.map((item, index) => ({
         key: `${message.id}:${index}:${item.title || item.summary || ""}`,
         title: item.title || item.summary || message.subject || "Email action item",
         description:
@@ -432,15 +439,89 @@ ${JSON.stringify(
           "",
         priority: item.priority || null,
         dueDate: item.dueDate || null,
-        sourceReason: item.sourceReason || null
-      }))
-      .filter((item) => item.title);
+        sourceReason: item.sourceReason || null,
+        ticketType: inferTrackleafTicketType(item, message, bugIssues)
+      }));
+
+    for (const issue of bugIssues) {
+      const alreadyRepresented = candidates.some((candidate) =>
+        normalizeText(`${candidate.title} ${candidate.description}`).includes(
+          normalizeText(issue.summary || issue.description || "")
+        )
+      );
+
+      if (!alreadyRepresented) {
+        candidates.push({
+          key: `${message.id}:bug:${issue.summary || issue.description || ""}`,
+          title: issue.summary || message.subject || "Bug report from email",
+          description: issue.description || llm.summary || message.body || "",
+          priority: issue.priority || "High",
+          dueDate: null,
+          sourceReason: "Bug report detected from email",
+          ticketType: "BUG"
+        });
+      }
+    }
+
+    return candidates.filter((item) => item.title);
+  }
+
+  function inferTrackleafTicketType(item, message, bugIssues) {
+    const haystack = normalizeText(
+      [
+        item.title,
+        item.description,
+        item.sourceReason,
+        message.subject,
+        message.snippet,
+        message.body
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+    const bugWords = [
+      "bug",
+      "broken",
+      "crash",
+      "error",
+      "exception",
+      "failed",
+      "failure",
+      "not working",
+      "incorrect",
+      "regression",
+      "issue"
+    ];
+
+    if (bugIssues.length) return "BUG";
+    return bugWords.some((word) => haystack.includes(word)) ? "BUG" : "TASK";
+  }
+
+  function buildTrackleafDescription(text) {
+    return JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          attrs: {
+            textAlign: null
+          },
+          content: [
+            {
+              type: "text",
+              text: text || ""
+            }
+          ]
+        }
+      ]
+    });
   }
 
   function buildTrackleafPayload(candidate, config) {
     return {
       title: candidate.title,
-      type: "TASK",
+      description: buildTrackleafDescription(candidate.description),
+      type: candidate.ticketType || "TASK",
       projectId: config.projectId,
       sprintId: config.sprintId,
       assigneeId: config.assigneeId,

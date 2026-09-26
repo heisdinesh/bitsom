@@ -28,7 +28,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         ok: response.ok,
         status: response.status,
         statusText: response.statusText,
-        data
+        data,
+        body: text
       });
     })
     .catch((error) => {

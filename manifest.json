@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Gmail Mail JSON Exporter",
-  "description": "Collects newly received Gmail message subject and body details into an exportable JSON file.",
-  "version": "1.6.0",
+  "description": "Collects Gmail action items and Google Meet captions into local JSON.",
+  "version": "1.9.1",
   "background": {
     "service_worker": "background.js"
   },
@@ -18,11 +18,24 @@
       "js": ["page-api.js"],
       "run_at": "document_idle",
       "world": "MAIN"
+    },
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["meet-content.js"],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    },
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["meet-page-api.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ],
   "permissions": ["storage"],
   "host_permissions": [
     "https://mail.google.com/*",
+    "https://meet.google.com/*",
     "https://api.trackleaf.in/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
