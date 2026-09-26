@@ -200,7 +200,7 @@
       },
       nextStep: {
         intendedUse: "Send emails to an LLM to extract action items, tasks, Jira tickets, and calendar events.",
-        suggestedOutputFields: ["actionItems", "tasks", "jiraIssues", "calendarEvents"]
+        suggestedOutputFields: ["actionItems", "tasks", "risks", "jiraIssues", "calendarEvents"]
       },
       emails: loadMessages()
     };
@@ -267,6 +267,15 @@ Use this exact JSON shape:
       "priority": "low | medium | high | urgent"
     }
   ],
+  "risks": [
+    {
+      "title": "short risk title",
+      "description": "what could go wrong and why it matters",
+      "impact": "business impact",
+      "severity": "low | medium | high | urgent",
+      "mitigation": "recommended mitigation or null"
+    }
+  ],
   "jiraIssues": [
     {
       "summary": "Jira issue summary",
@@ -289,6 +298,9 @@ Rules:
 - If there are no real action items, return empty arrays.
 - Treat requests, reminders, appointments, deadlines, meetings, bookings, renewals, payments, filings, failed deployments, and verification warnings as potential action items.
 - Treat user reports of broken behavior, errors, crashes, failures, regressions, incorrect output, or "not working" as bugs. Add a jiraIssues entry with issueType "Bug".
+- Extract business risks when the email mentions a deadline miss, renewal delay, revenue/customer impact, compliance exposure, production failure, blocked work, or late surfacing issue.
+- Preserve important business context in descriptions: customer or account name, deadline, owner/team, blocker, impacted system, risk, and requested follow-up.
+- For bugs, include observed behavior, affected system/service, severity, blocker status, customer impact, and any requested fix/review in the jiraIssues description when available.
 - If the email says to do something, create at least one actionItems entry and one tasks entry.
 - If the email describes a meeting, appointment, visit, event, or deadline with enough date/time information, create a calendarEvents entry.
 - Prefer explicit deadlines from the email. Do not invent dates or owners.
@@ -337,6 +349,7 @@ ${JSON.stringify(
       summary: normalizeNullable(parsed.summary) || "",
       actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems.map(normalizeItem) : [],
       tasks: Array.isArray(parsed.tasks) ? parsed.tasks.map(normalizeItem) : [],
+      risks: Array.isArray(parsed.risks) ? parsed.risks.map(normalizeItem) : [],
       jiraIssues: Array.isArray(parsed.jiraIssues) ? parsed.jiraIssues.map(normalizeItem) : [],
       calendarEvents: Array.isArray(parsed.calendarEvents) ? parsed.calendarEvents.map(normalizeItem) : []
     };
@@ -422,6 +435,7 @@ ${JSON.stringify(
   function getTrackleafCandidates(message) {
     const llm = message.llm || {};
     const actionItems = Array.isArray(llm.actionItems) ? llm.actionItems : [];
+    const risks = Array.isArray(llm.risks) ? llm.risks : [];
     const bugIssues = (Array.isArray(llm.jiraIssues) ? llm.jiraIssues : []).filter((issue) =>
       String(issue.issueType || "").toLowerCase().includes("bug")
     );
@@ -429,14 +443,13 @@ ${JSON.stringify(
     const candidates = actionItems.map((item, index) => ({
         key: `${message.id}:${index}:${item.title || item.summary || ""}`,
         title: item.title || item.summary || message.subject || "Email action item",
-        description:
-          item.description ||
-          item.sourceReason ||
-          llm.summary ||
-          message.body ||
-          message.snippet ||
-          message.subject ||
-          "",
+        description: buildEmailTicketDescription({
+          item,
+          message,
+          risks,
+          bugIssues,
+          summary: llm.summary
+        }),
         priority: item.priority || null,
         dueDate: item.dueDate || null,
         sourceReason: item.sourceReason || null,
@@ -454,7 +467,18 @@ ${JSON.stringify(
         candidates.push({
           key: `${message.id}:bug:${issue.summary || issue.description || ""}`,
           title: issue.summary || message.subject || "Bug report from email",
-          description: issue.description || llm.summary || message.body || "",
+          description: buildEmailTicketDescription({
+            item: {
+              title: issue.summary,
+              description: issue.description,
+              priority: issue.priority,
+              sourceReason: "Bug report detected from email"
+            },
+            message,
+            risks,
+            bugIssues: [issue],
+            summary: llm.summary
+          }),
           priority: issue.priority || "High",
           dueDate: null,
           sourceReason: "Bug report detected from email",
@@ -464,6 +488,59 @@ ${JSON.stringify(
     }
 
     return candidates.filter((item) => item.title);
+  }
+
+  function formatLines(lines) {
+    return lines
+      .filter((line) => line !== undefined && line !== null && String(line).trim())
+      .map((line) => String(line).trim())
+      .join("\n");
+  }
+
+  function formatRisk(risk) {
+    return formatLines([
+      risk.title ? `- ${risk.title}` : null,
+      risk.description ? `  Context: ${risk.description}` : null,
+      risk.impact ? `  Impact: ${risk.impact}` : null,
+      risk.severity ? `  Severity: ${risk.severity}` : null,
+      risk.mitigation ? `  Mitigation: ${risk.mitigation}` : null
+    ]);
+  }
+
+  function buildEmailTicketDescription({ item, message, risks, bugIssues, summary }) {
+    const riskText = risks.map(formatRisk).filter(Boolean).join("\n");
+    const bugText = bugIssues
+      .map((issue) =>
+        formatLines([
+          issue.summary ? `- ${issue.summary}` : null,
+          issue.description ? `  Details: ${issue.description}` : null,
+          issue.priority ? `  Priority: ${issue.priority}` : null
+        ])
+      )
+      .filter(Boolean)
+      .join("\n");
+
+    return formatLines([
+      item.description || item.sourceReason || summary || message.body || message.snippet || "",
+      "",
+      item.dueDate ? `Due date: ${item.dueDate}` : null,
+      item.priority ? `Priority: ${item.priority}` : null,
+      item.owner ? `Owner: ${item.owner}` : null,
+      item.sourceReason ? `Why this matters: ${item.sourceReason}` : null,
+      "",
+      summary ? `Email summary: ${summary}` : null,
+      message.from?.name || message.from?.email
+        ? `From: ${[message.from?.name, message.from?.email].filter(Boolean).join(" <")}${
+            message.from?.name && message.from?.email ? ">" : ""
+          }`
+        : null,
+      message.receivedAt ? `Received: ${message.receivedAt}` : null,
+      message.subject ? `Subject: ${message.subject}` : null,
+      "",
+      riskText ? `Risks:\n${riskText}` : null,
+      bugText ? `Bug context:\n${bugText}` : null,
+      message.body ? `Original email:\n${message.body}` : null
+    ]);
   }
 
   function inferTrackleafTicketType(item, message, bugIssues) {
@@ -526,7 +603,8 @@ ${JSON.stringify(
       sprintId: config.sprintId,
       assigneeId: config.assigneeId,
       customFields: {
-        ...config.customFields
+        ...config.customFields,
+        default_field_104: candidate.ticketType || config.customFields.default_field_104
       }
     };
   }
@@ -657,6 +735,7 @@ ${JSON.stringify(
         summary: normalized.summary,
         actionItems: normalized.actionItems,
         tasks: normalized.tasks,
+        risks: normalized.risks,
         jiraIssues: normalized.jiraIssues,
         calendarEvents: normalized.calendarEvents,
         raw: parsed
@@ -677,6 +756,7 @@ ${JSON.stringify(
         subject: message.subject,
         actionItems: analyzedMessage.llm.actionItems.length,
         tasks: analyzedMessage.llm.tasks.length,
+        risks: analyzedMessage.llm.risks.length,
         jiraIssues: analyzedMessage.llm.jiraIssues.length,
         calendarEvents: analyzedMessage.llm.calendarEvents.length
       });
@@ -891,6 +971,7 @@ ${JSON.stringify(
             status: "pending",
             actionItems: [],
             tasks: [],
+            risks: [],
             jiraIssues: [],
             calendarEvents: []
           }

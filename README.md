@@ -25,6 +25,8 @@ An agentic system that turns fragmented organizational information into structur
 
 This Chrome extension is the first local-first prototype. It captures work context directly from Gmail and Google Meet, analyzes it with local AI, stores structured outputs, and can create Trackleaf tickets from extracted action items.
 
+Additionally, inside the Trackleaf platform, teams can ask AI to prioritize work based on a stated goal, using the captured actions, risks, blockers, and deadlines as context.
+
 ## Why This Approach
 
 **Local-first AI:** keeps sensitive enterprise data local and enables low-cost AI processing.
