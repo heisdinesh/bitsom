@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Gmail New Mail Console Logger",
-  "description": "Logs newly received Gmail message subject and body details to the page console.",
-  "version": "1.0.0",
+  "name": "Gmail Mail JSON Exporter",
+  "description": "Collects newly received Gmail message subject and body details into an exportable JSON file.",
+  "version": "1.2.0",
   "content_scripts": [
     {
       "matches": ["https://mail.google.com/mail/u/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ],
   "permissions": ["storage"],
