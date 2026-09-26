@@ -4,10 +4,37 @@
   const LOG_PREFIX = "[Gmail Mail Logger]";
   const PROCESSED_KEY = "gmailMailLoggerProcessed";
   const MAIL_EXPORT_KEY = "gmailMailLoggerMessages";
+  const OLLAMA_CONFIG_KEY = "gmailMailLoggerOllamaConfig";
+  const TRACKLEAF_CONFIG_KEY = "gmailMailLoggerTrackleafConfig";
   const SCAN_INTERVAL_MS = 3000;
   const OPEN_DELAY_MS = 1800;
   const RETURN_DELAY_MS = 900;
   const DEBUG_INTERVAL_MS = 10000;
+  const COMMAND_SOURCE = "gmail-mail-json-exporter-page";
+  const DEFAULT_OLLAMA_CONFIG = {
+    enabled: true,
+    url: "http://localhost:11434/api/chat",
+    model: "llama3.2",
+    temperature: 0
+  };
+  const DEFAULT_TRACKLEAF_CONFIG = {
+    enabled: true,
+    url: "https://api.trackleaf.in/api/v1/ticket/create-ticket",
+    orgId: "org-01m2jbddgt7agp9j4yngcwwjxk",
+    projectId: "prj-01m3e7dk2ttp0z7k4cryj07ba4",
+    assigneeId: "usr-01kncv99nsmjxb10rnn1397xy2",
+    sprintId: null,
+    token:
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzci0wMWtuY3Y5OW5zbWp4YjEwcm5uMTM5N3h5MiIsImVtYWlsIjoiZGluZXNoMzUzODJAZ21haWwuY29tIiwiaWF0IjoxNzkwNDA1MTQ4LCJleHAiOjE3OTE3MDExNDh9.-IK9RDvZfIWOEGhfA9ZODZr73GzW0bk2bB6A8K1fnWk",
+    customFields: {
+      default_field_103: 0,
+      default_field_104: "BUG",
+      default_field_105: "tks-01m3e7dk5w5y76yggzmeznwfzw",
+      default_field_106: "pri-01kncs2n72ws974zg963y31k25",
+      default_field_107: "usr-01kncv99nsmjxb10rnn1397xy2",
+      default_field_109: "usr-01kncv99nsmjxb10rnn1397xy2"
+    }
+  };
 
   let isProcessing = false;
   let processedIds = new Set();
@@ -84,8 +111,79 @@
     return messages.length;
   }
 
+  function updateStoredMessage(id, updater) {
+    const messages = loadMessages();
+    const index = messages.findIndex((message) => message.id === id);
+    if (index === -1) return null;
+
+    messages[index] = updater(messages[index]);
+    localStorage.setItem(MAIL_EXPORT_KEY, JSON.stringify(messages.slice(-500)));
+    return messages[index];
+  }
+
   function clearMessages() {
     localStorage.removeItem(MAIL_EXPORT_KEY);
+  }
+
+  function loadOllamaConfig() {
+    try {
+      const raw = localStorage.getItem(OLLAMA_CONFIG_KEY);
+      return {
+        ...DEFAULT_OLLAMA_CONFIG,
+        ...(raw ? JSON.parse(raw) : {})
+      };
+    } catch (error) {
+      console.warn(LOG_PREFIX, "Could not read Ollama config.", error);
+      return { ...DEFAULT_OLLAMA_CONFIG };
+    }
+  }
+
+  function saveOllamaConfig(config) {
+    const nextConfig = {
+      ...loadOllamaConfig(),
+      ...config
+    };
+    localStorage.setItem(OLLAMA_CONFIG_KEY, JSON.stringify(nextConfig));
+    return nextConfig;
+  }
+
+  function loadTrackleafConfig() {
+    try {
+      const raw = localStorage.getItem(TRACKLEAF_CONFIG_KEY);
+      const savedConfig = raw ? JSON.parse(raw) : {};
+      return {
+        ...DEFAULT_TRACKLEAF_CONFIG,
+        ...savedConfig,
+        customFields: {
+          ...DEFAULT_TRACKLEAF_CONFIG.customFields,
+          ...(savedConfig.customFields || {})
+        }
+      };
+    } catch (error) {
+      console.warn(LOG_PREFIX, "Could not read Trackleaf config.", error);
+      return { ...DEFAULT_TRACKLEAF_CONFIG };
+    }
+  }
+
+  function saveTrackleafConfig(config) {
+    const currentConfig = loadTrackleafConfig();
+    const nextConfig = {
+      ...currentConfig,
+      ...config,
+      customFields: {
+        ...currentConfig.customFields,
+        ...(config?.customFields || {})
+      }
+    };
+    localStorage.setItem(TRACKLEAF_CONFIG_KEY, JSON.stringify(nextConfig));
+    return nextConfig;
+  }
+
+  function safeConfig(config) {
+    return {
+      ...config,
+      token: config.token ? "[configured]" : ""
+    };
   }
 
   function downloadJson() {
@@ -117,6 +215,405 @@
     URL.revokeObjectURL(url);
 
     log(`Exported ${payload.emails.length} messages to JSON.`);
+  }
+
+  function extractJsonObject(text) {
+    const trimmed = String(text || "").trim();
+
+    try {
+      return JSON.parse(trimmed);
+    } catch (_error) {
+      const start = trimmed.indexOf("{");
+      const end = trimmed.lastIndexOf("}");
+
+      if (start === -1 || end === -1 || end <= start) {
+        throw new Error("Ollama response did not contain a JSON object.");
+      }
+
+      return JSON.parse(trimmed.slice(start, end + 1));
+    }
+  }
+
+  function buildActionItemPrompt(message) {
+    const now = new Date().toISOString();
+
+    return `You extract action items from emails.
+
+Return only valid JSON. Do not include markdown fences or explanatory text.
+
+Use this exact JSON shape:
+{
+  "status": "done",
+  "summary": "one sentence summary",
+  "actionItems": [
+    {
+      "title": "short action title",
+      "description": "what needs to be done",
+      "owner": "person or team responsible, or null",
+      "dueDate": "YYYY-MM-DD or null",
+      "priority": "low | medium | high | urgent",
+      "sourceReason": "why this is an action item"
+    }
+  ],
+  "tasks": [
+    {
+      "title": "task title",
+      "description": "task details",
+      "dueDate": "YYYY-MM-DD or null",
+      "priority": "low | medium | high | urgent"
+    }
+  ],
+  "jiraIssues": [
+    {
+      "summary": "Jira issue summary",
+      "description": "Jira-ready description",
+      "issueType": "Task | Bug | Story",
+      "priority": "Low | Medium | High | Highest"
+    }
+  ],
+  "calendarEvents": [
+    {
+      "title": "event title",
+      "description": "event details",
+      "start": "ISO datetime or null",
+      "end": "ISO datetime or null"
+    }
+  ]
+}
+
+Rules:
+- If there are no real action items, return empty arrays.
+- Treat requests, reminders, appointments, deadlines, meetings, bookings, renewals, payments, filings, failed deployments, and verification warnings as potential action items.
+- If the email says to do something, create at least one actionItems entry and one tasks entry.
+- If the email describes a meeting, appointment, visit, event, or deadline with enough date/time information, create a calendarEvents entry.
+- Prefer explicit deadlines from the email. Do not invent dates or owners.
+- Convert dates to YYYY-MM-DD when possible. Use the email received date and current date only to infer the year for explicit dates like "24th September".
+- If a field is unknown, use JSON null, not the string "null".
+- Priority guidance: urgent for overdue/compliance/account-risk/deployment-failure items, high for explicit near-term deadlines, medium for normal tasks, low for informational items.
+
+Current timestamp: ${now}
+
+Email JSON:
+${JSON.stringify(
+  {
+    from: message.from,
+    receivedAt: message.receivedAt,
+    subject: message.subject,
+    snippet: message.snippet,
+    body: message.body
+  },
+  null,
+  2
+)}`;
+  }
+
+  function normalizeNullable(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "string") return value;
+
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.toLowerCase() === "null" || trimmed.toLowerCase() === "unknown") {
+      return null;
+    }
+
+    return trimmed;
+  }
+
+  function normalizeItem(item) {
+    if (!item || typeof item !== "object") return item;
+
+    return Object.fromEntries(
+      Object.entries(item).map(([key, value]) => [key, normalizeNullable(value)])
+    );
+  }
+
+  function normalizeLlmResult(parsed) {
+    return {
+      summary: normalizeNullable(parsed.summary) || "",
+      actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems.map(normalizeItem) : [],
+      tasks: Array.isArray(parsed.tasks) ? parsed.tasks.map(normalizeItem) : [],
+      jiraIssues: Array.isArray(parsed.jiraIssues) ? parsed.jiraIssues.map(normalizeItem) : [],
+      calendarEvents: Array.isArray(parsed.calendarEvents) ? parsed.calendarEvents.map(normalizeItem) : []
+    };
+  }
+
+  function sendOllamaRequest(config, payload) {
+    return new Promise((resolve, reject) => {
+      if (!globalThis.chrome?.runtime?.sendMessage) {
+        reject(
+          new Error(
+            "Chrome extension runtime is unavailable. Reload the extension, then hard-refresh Gmail so content.js runs in the ISOLATED extension world."
+          )
+        );
+        return;
+      }
+
+      globalThis.chrome.runtime.sendMessage(
+        {
+          type: "OLLAMA_CHAT",
+          url: config.url,
+          payload
+        },
+        (response) => {
+          if (globalThis.chrome.runtime.lastError) {
+            reject(new Error(globalThis.chrome.runtime.lastError.message));
+            return;
+          }
+
+          if (!response?.ok) {
+            const errorPrefix =
+              response?.status === 403
+                ? "Ollama rejected the extension origin. Restart Ollama with OLLAMA_ORIGINS='chrome-extension://*' or OLLAMA_ORIGINS='*'. "
+                : "";
+
+            reject(
+              new Error(
+                errorPrefix +
+                  (response?.error ||
+                    `Ollama request failed: ${response?.status || "unknown"} ${response?.statusText || ""}`.trim())
+              )
+            );
+            return;
+          }
+
+          resolve(response.data);
+        }
+      );
+    });
+  }
+
+  function sendBackgroundRequest(message) {
+    return new Promise((resolve, reject) => {
+      if (!globalThis.chrome?.runtime?.sendMessage) {
+        reject(
+          new Error(
+            "Chrome extension runtime is unavailable. Reload the extension, then hard-refresh Gmail so content.js runs in the ISOLATED extension world."
+          )
+        );
+        return;
+      }
+
+      globalThis.chrome.runtime.sendMessage(message, (response) => {
+        if (globalThis.chrome.runtime.lastError) {
+          reject(new Error(globalThis.chrome.runtime.lastError.message));
+          return;
+        }
+
+        if (!response?.ok) {
+          reject(
+            new Error(
+              response?.error ||
+                `Request failed: ${response?.status || "unknown"} ${response?.statusText || ""}`.trim()
+            )
+          );
+          return;
+        }
+
+        resolve(response.data);
+      });
+    });
+  }
+
+  function getTrackleafCandidates(message) {
+    const llm = message.llm || {};
+    const actionItems = Array.isArray(llm.actionItems) ? llm.actionItems : [];
+
+    return actionItems
+      .map((item, index) => ({
+        key: `${message.id}:${index}:${item.title || item.summary || ""}`,
+        title: item.title || item.summary || message.subject || "Email action item",
+        description:
+          item.description ||
+          item.sourceReason ||
+          llm.summary ||
+          message.body ||
+          message.snippet ||
+          message.subject ||
+          "",
+        priority: item.priority || null,
+        dueDate: item.dueDate || null,
+        sourceReason: item.sourceReason || null
+      }))
+      .filter((item) => item.title);
+  }
+
+  function buildTrackleafPayload(candidate, config) {
+    return {
+      title: candidate.title,
+      type: "TASK",
+      projectId: config.projectId,
+      sprintId: config.sprintId,
+      assigneeId: config.assigneeId,
+      customFields: {
+        ...config.customFields
+      }
+    };
+  }
+
+  async function createTrackleafTicketsForMessage(message) {
+    const config = loadTrackleafConfig();
+    if (!config.enabled) return message;
+    if (!config.token) {
+      throw new Error("Trackleaf is enabled, but no bearer token is configured.");
+    }
+
+    const candidates = getTrackleafCandidates(message);
+    const alreadyCreated = new Set(
+      (message.trackleaf?.tickets || []).map((ticket) => ticket.candidateKey)
+    );
+    const tickets = [...(message.trackleaf?.tickets || [])];
+
+    for (const candidate of candidates) {
+      if (alreadyCreated.has(candidate.key)) continue;
+
+      const payload = buildTrackleafPayload(candidate, config);
+      const data = await sendBackgroundRequest({
+        type: "TRACKLEAF_CREATE_TICKET",
+        url: config.url,
+        headers: {
+          Authorization: `Bearer ${config.token}`,
+          "Content-Type": "application/json",
+          "x-org-id": config.orgId,
+          "x-project-id": config.projectId
+        },
+        payload
+      });
+
+      tickets.push({
+        candidateKey: candidate.key,
+        createdAt: new Date().toISOString(),
+        title: candidate.title,
+        payload,
+        response: data
+      });
+    }
+
+    return updateStoredMessage(message.id, (storedMessage) => ({
+      ...storedMessage,
+      trackleaf: {
+        status: "done",
+        completedAt: new Date().toISOString(),
+        tickets
+      }
+    }));
+  }
+
+  async function createAndStoreTrackleafTickets(message) {
+    try {
+      const updatedMessage = await createTrackleafTicketsForMessage(message);
+      if (!updatedMessage) return null;
+
+      if (loadTrackleafConfig().enabled) {
+        log("Trackleaf ticket creation finished", {
+          id: message.id,
+          subject: message.subject,
+          tickets: updatedMessage.trackleaf?.tickets?.length || 0
+        });
+      }
+
+      return updatedMessage;
+    } catch (error) {
+      updateStoredMessage(message.id, (storedMessage) => ({
+        ...storedMessage,
+        trackleaf: {
+          ...(storedMessage.trackleaf || {}),
+          status: "error",
+          completedAt: new Date().toISOString(),
+          error: error.message
+        }
+      }));
+      console.error(LOG_PREFIX, "Trackleaf ticket creation failed.", error);
+      return null;
+    }
+  }
+
+  async function analyzeMessageWithOllama(message) {
+    const config = loadOllamaConfig();
+    if (!config.enabled) return null;
+
+    updateStoredMessage(message.id, (storedMessage) => ({
+      ...storedMessage,
+      llm: {
+        ...storedMessage.llm,
+        status: "processing",
+        provider: "ollama",
+        model: config.model,
+        startedAt: new Date().toISOString()
+      }
+    }));
+
+    const data = await sendOllamaRequest(config, {
+      model: config.model,
+      stream: false,
+      options: {
+        temperature: config.temperature
+      },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an assistant that extracts precise, conservative action items from email. Return only valid JSON."
+        },
+        {
+          role: "user",
+          content: buildActionItemPrompt(message)
+        }
+      ]
+    });
+    const content = data.message?.content || data.response || "";
+    const parsed = extractJsonObject(content);
+    const normalized = normalizeLlmResult(parsed);
+    const completedAt = new Date().toISOString();
+
+    return updateStoredMessage(message.id, (storedMessage) => ({
+      ...storedMessage,
+      llm: {
+        status: "done",
+        provider: "ollama",
+        model: config.model,
+        startedAt: storedMessage.llm?.startedAt || null,
+        completedAt,
+        summary: normalized.summary,
+        actionItems: normalized.actionItems,
+        tasks: normalized.tasks,
+        jiraIssues: normalized.jiraIssues,
+        calendarEvents: normalized.calendarEvents,
+        raw: parsed
+      }
+    }));
+  }
+
+  async function analyzeAndStoreMessage(message) {
+    try {
+      const analyzedMessage = await analyzeMessageWithOllama(message);
+      if (!analyzedMessage) {
+        log("Ollama analysis skipped because it is disabled.", { id: message.id });
+        return;
+      }
+
+      log("Ollama action-item analysis stored", {
+        id: message.id,
+        subject: message.subject,
+        actionItems: analyzedMessage.llm.actionItems.length,
+        tasks: analyzedMessage.llm.tasks.length,
+        jiraIssues: analyzedMessage.llm.jiraIssues.length,
+        calendarEvents: analyzedMessage.llm.calendarEvents.length
+      });
+
+      await createAndStoreTrackleafTickets(analyzedMessage);
+    } catch (error) {
+      updateStoredMessage(message.id, (storedMessage) => ({
+        ...storedMessage,
+        llm: {
+          ...storedMessage.llm,
+          status: "error",
+          provider: "ollama",
+          completedAt: new Date().toISOString(),
+          error: error.message
+        }
+      }));
+      console.error(LOG_PREFIX, "Ollama action-item analysis failed.", error);
+    }
   }
 
   function isInboxView() {
@@ -332,6 +829,8 @@
 
         history.back();
         await sleep(RETURN_DELAY_MS);
+
+        await analyzeAndStoreMessage(message);
       }
     } catch (error) {
       console.error(LOG_PREFIX, "Failed while processing new mail.", error);
@@ -348,43 +847,84 @@
     return processRows(reason, "visible");
   }
 
+  async function handlePageCommand(command, payload) {
+    if (command === "scan") {
+      processNewMail("manual");
+    }
+
+    if (command === "scanVisible") {
+      processVisibleMail("manual");
+    }
+
+    if (command === "reset") {
+      processedIds.clear();
+      saveProcessedIds();
+      clearMessages();
+      log("Processed message cache and captured JSON messages cleared.");
+    }
+
+    if (command === "processed") {
+      log("Processed message ids", Array.from(processedIds));
+    }
+
+    if (command === "messages") {
+      log("Captured JSON messages", loadMessages());
+    }
+
+    if (command === "configureOllama") {
+      const nextConfig = saveOllamaConfig(payload || {});
+      log("Ollama config saved", nextConfig);
+    }
+
+    if (command === "ollamaConfig") {
+      log("Ollama config", loadOllamaConfig());
+    }
+
+    if (command === "configureTrackleaf") {
+      const nextConfig = saveTrackleafConfig(payload || {});
+      log("Trackleaf config saved", safeConfig(nextConfig));
+    }
+
+    if (command === "trackleafConfig") {
+      log("Trackleaf config", safeConfig(loadTrackleafConfig()));
+    }
+
+    if (command === "analyzeStored") {
+      const messages = loadMessages();
+      for (const message of messages) {
+        if (message.llm?.status !== "done") {
+          await analyzeAndStoreMessage(message);
+        }
+      }
+      log("Stored-message analysis finished.", loadMessages());
+    }
+
+    if (command === "createTrackleafForStored") {
+      const messages = loadMessages();
+      for (const message of messages) {
+        if (message.llm?.status === "done") {
+          await createAndStoreTrackleafTickets(message);
+        }
+      }
+      log("Trackleaf creation for stored messages finished.", loadMessages());
+    }
+
+    if (command === "exportJson") {
+      downloadJson();
+    }
+  }
+
   function start() {
     loadProcessedIds();
 
-    window.gmailMailLogger = {
-      scan() {
-        processNewMail("manual");
-        return "Unread scan requested. Check console lines starting with [Gmail Mail Logger].";
-      },
-      scanVisible() {
-        processVisibleMail("manual");
-        return "Visible inbox scan requested. This captures read and unread visible rows.";
-      },
-      reset() {
-        processedIds.clear();
-        saveProcessedIds();
-        clearMessages();
-        log("Processed message cache and captured JSON messages cleared.");
-        return "Processed cache and captured JSON messages cleared.";
-      },
-      processed() {
-        log("Processed message ids", Array.from(processedIds));
-        return Array.from(processedIds);
-      },
-      messages() {
-        const messages = loadMessages();
-        log("Captured JSON messages", loadMessages());
-        return messages;
-      },
-      exportJson() {
-        downloadJson();
-        return "JSON export requested.";
-      }
-    };
+    window.addEventListener("message", (event) => {
+      if (event.source !== window || event.data?.source !== COMMAND_SOURCE) return;
+      handlePageCommand(event.data.command, event.data.payload);
+    });
 
     log("Started. Watching Gmail inbox for unread mail. Ignore console lines that do not start with this prefix.");
     log(
-      "Console commands ready: gmailMailLogger.scan(), gmailMailLogger.scanVisible(), gmailMailLogger.exportJson(), gmailMailLogger.messages(), gmailMailLogger.reset()."
+      "Console commands ready: gmailMailLogger.scan(), gmailMailLogger.scanVisible(), gmailMailLogger.exportJson(), gmailMailLogger.messages(), gmailMailLogger.configureOllama(), gmailMailLogger.configureTrackleaf(), gmailMailLogger.reset()."
     );
 
     const observer = new MutationObserver(() => {

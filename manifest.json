@@ -2,15 +2,29 @@
   "manifest_version": 3,
   "name": "Gmail Mail JSON Exporter",
   "description": "Collects newly received Gmail message subject and body details into an exportable JSON file.",
-  "version": "1.2.0",
+  "version": "1.6.0",
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": ["https://mail.google.com/mail/u/*"],
       "js": ["content.js"],
       "run_at": "document_idle",
+      "world": "ISOLATED"
+    },
+    {
+      "matches": ["https://mail.google.com/mail/u/*"],
+      "js": ["page-api.js"],
+      "run_at": "document_idle",
       "world": "MAIN"
     }
   ],
   "permissions": ["storage"],
-  "host_permissions": ["https://mail.google.com/*"]
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "https://api.trackleaf.in/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ]
 }
